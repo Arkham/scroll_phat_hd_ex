@@ -74,6 +74,7 @@ defmodule ScrollPhatHdEx.Server do
 
   def init([bus, address]) do
     {:ok, i2c} = I2c.start_link(bus, address)
+    reset_i2c(i2c)
     initialize_display(i2c)
     buffer = Matrix.new(@width, @height)
     {:ok, %State{buffer: buffer, i2c: i2c}}
@@ -114,6 +115,13 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   # Helpers
+
+  defp reset_i2c(i2c) do
+    write_bank(i2c, @config_bank)
+    i2c_write(i2c, @shutdown_register, 0)
+    Process.sleep(1)
+    i2c_write(i2c, @shutdown_register, 1)
+  end
 
   defp initialize_display(i2c) do
     # Switch to configuration bank
