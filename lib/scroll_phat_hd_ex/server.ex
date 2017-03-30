@@ -62,7 +62,20 @@ defmodule ScrollPhatHdEx.Server do
     |> Enum.each(fn(n) ->
       fill_up(n)
       show()
-      Process.sleep(100)
+    end)
+
+    clear()
+    show()
+  end
+
+  def epilepsy do
+    1..100
+    |> Enum.each(fn(n) ->
+      case rem(n, 2) do
+        0 -> clear(); show()
+        _ -> fill(); show()
+      end
+      Process.sleep(1)
     end)
   end
 
