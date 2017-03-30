@@ -1,6 +1,8 @@
 defmodule ScrollPhatHdEx.Server do
   use GenServer
 
+  @font_mod ScrollPhatHdEx.Fonts.Font5x7
+
   @bus "i2c-1"
   @address 0x74
 
@@ -79,6 +81,10 @@ defmodule ScrollPhatHdEx.Server do
     end)
   end
 
+  def write_string(string) do
+    GenServer.call(__MODULE__, {:write_string, string})
+  end
+
   def clear do
     GenServer.call(__MODULE__, :clear)
   end
@@ -119,6 +125,14 @@ defmodule ScrollPhatHdEx.Server do
       y = trunc(n / @width)
       Matrix.set(result, x, y, 255)
     end)
+    {:reply, :ok, %{state | buffer: new_buffer}}
+  end
+
+  def handle_call({:write_string, string}, _from, state) do
+    new_buffer =
+      string
+      |> write_string(state.buffer)
+
     {:reply, :ok, %{state | buffer: new_buffer}}
   end
 
@@ -176,7 +190,7 @@ defmodule ScrollPhatHdEx.Server do
     # our display is 17x7 but the actual controller is designed for a 16x9 display
     # what they did is to take the original display wirings and split them apart and
     # put one on top of another. we need to do some acrobatics to get things working
-    (for x <- 0..(@width-1), y <- 0..(@height-1), do: {x, y})
+    matrix_indexes(buffer)
     |> Enum.reduce(List.duplicate(0, 144), fn({x, y}, result) ->
       List.replace_at(result, pixel_address(x, 6-y), Matrix.elem(buffer, x, y))
     end)
@@ -201,4 +215,31 @@ defmodule ScrollPhatHdEx.Server do
       i2c_write(i2c, @color_offset + (index * chunk_size), chunks)
     end)
   end
+
+  defp write_string(string, buffer) do
+    {buffer, _} =
+      string
+      |> String.to_charlist
+      |> Enum.reduce({buffer, {0, 0}}, fn(character, {buffer, {start_x, start_y}}) ->
+        write_character(character, buffer, {start_x, start_y})
+      end)
+
+    buffer
+  end
+
+  defp write_character(character, buffer, {start_x, start_y}) do
+    datapoints = @font_mod.data[character]
+    {rows, cols} = Matrix.size(datapoints)
+    matrix_indexes(datapoints)
+    |> Enum.reduce(buffer, fn({x,y}, result) ->
+      Matrix.set(result, x+start_x, y+start_y, 255)
+    end)
+    {buffer, {start_x+rows, start_y+cols}}
+  end
+
+  defp matrix_indexes([first|_] = matrix) when is_list(first) do
+    {rows, cols} = Matrix.size(matrix)
+    for x <- 0..(rows-1), y <- 0..(cols-1), do: {x, y}
+  end
+  defp matrix_indexes(_), do: []
 end
