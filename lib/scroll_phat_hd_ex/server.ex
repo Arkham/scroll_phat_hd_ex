@@ -81,8 +81,29 @@ defmodule ScrollPhatHdEx.Server do
     end)
   end
 
+  def plasma do
+    1..1000
+    |> Enum.each(fn(i) ->
+      s = :math.sin(i / 50.0) * 2.0 + 6.0
+      (for x <- 0..(@width-1), y <- 0..(@height-1), do: {x,y})
+      |> Enum.each(fn({x, y}) ->
+        v = 0.3 + (0.3 * :math.sin((x * s) + i / 4.0) * :math.cos((y * s) + i / 4.0))
+        set_pixel(x, y, round(v*255))
+      end)
+
+      show()
+    end)
+
+    clear()
+    show()
+  end
+
   def write_string(string) do
     GenServer.call(__MODULE__, {:write_string, string})
+  end
+
+  def set_pixel(x, y, brightness) do
+    GenServer.call(__MODULE__, {:set_pixel, x, y, brightness})
   end
 
   def clear do
@@ -123,7 +144,7 @@ defmodule ScrollPhatHdEx.Server do
     new_buffer = Enum.reduce(0..limit-1, Matrix.new(@width, @height), fn(n, result) ->
       x = Integer.mod(n, @width)
       y = trunc(n / @width)
-      Matrix.set(result, x, y, 255)
+      write_pixel(result, x, y, 255)
     end)
     {:reply, :ok, %{state | buffer: new_buffer}}
   end
@@ -133,6 +154,11 @@ defmodule ScrollPhatHdEx.Server do
       string
       |> write_string(state.buffer)
 
+    {:reply, :ok, %{state | buffer: new_buffer}}
+  end
+
+  def handle_call({:set_pixel, x, y, brightness}, _from, state) do
+    new_buffer = write_pixel(state.buffer, x, y, brightness)
     {:reply, :ok, %{state | buffer: new_buffer}}
   end
 
@@ -179,7 +205,6 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   defp i2c_write(i2c, address, value) do
-    IO.inspect IO.iodata_to_binary([address, value])
     I2c.write(i2c, IO.iodata_to_binary([address, value]))
   end
 
@@ -220,20 +245,29 @@ defmodule ScrollPhatHdEx.Server do
     {buffer, _} =
       string
       |> String.to_charlist
-      |> Enum.reduce({buffer, {0, 0}}, fn(character, {buffer, {start_x, start_y}}) ->
-        write_character(character, buffer, {start_x, start_y})
+      |> Enum.reduce({buffer, {0, 0}}, fn(character, {result, {start_x, start_y}}) ->
+        {result, {start_x, _}} = write_character(character, result, {start_x, start_y})
+        {result, {start_x + 1, start_y}}
       end)
 
     buffer
   end
 
   defp write_character(character, buffer, {start_x, start_y}) do
-    datapoints = @font_mod.data[character]
+    datapoints =
+      @font_mod.data[character]
+      |> Matrix.transpose
+
     {rows, cols} = Matrix.size(datapoints)
-    matrix_indexes(datapoints)
-    |> Enum.reduce(buffer, fn({x,y}, result) ->
-      Matrix.set(result, x+start_x, y+start_y, 255)
-    end)
+
+    buffer =
+      matrix_indexes(datapoints)
+      |> Enum.reduce(buffer, fn({x,y}, result) ->
+        case Matrix.elem(datapoints, x, y) do
+          0 -> result
+          _ -> write_pixel(result, x+start_x, y+start_y, 255)
+        end
+      end)
     {buffer, {start_x+rows, start_y+cols}}
   end
 
@@ -242,4 +276,8 @@ defmodule ScrollPhatHdEx.Server do
     for x <- 0..(rows-1), y <- 0..(cols-1), do: {x, y}
   end
   defp matrix_indexes(_), do: []
+
+  defp write_pixel(buffer, x, y, brightness) do
+    Matrix.set(buffer, x, y, brightness)
+  end
 end
