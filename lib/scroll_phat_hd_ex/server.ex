@@ -31,8 +31,8 @@ defmodule ScrollPhatHdEx.Server do
   @color_offset 0x24
 
   defmodule State do
-    defstruct buffer: nil, i2c: nil, current_frame: 0, scroll_x: 0, scroll_y: 0,
-      rotate: 0, flip_x: false, flip_y: false, brightness: 1
+    defstruct buffer: nil, i2c: nil, current_frame: 0,
+      flip_x: true, flip_y: true, brightness: 0.05
   end
 
   # Public API
@@ -49,12 +49,82 @@ defmodule ScrollPhatHdEx.Server do
     GenServer.call(__MODULE__, :show)
   end
 
+  def set_brightness(value) do
+    GenServer.call(__MODULE__, {:set_brightness, value})
+  end
+
   def fill do
     GenServer.call(__MODULE__, :fill)
   end
 
   def fill_up(limit) do
     GenServer.call(__MODULE__, {:fill_up, limit})
+  end
+
+  def write_char(char) do
+    GenServer.call(__MODULE__, {:write_char, char})
+  end
+
+  def write_string(string) do
+    GenServer.call(__MODULE__, {:write_string, string})
+  end
+
+  def write_buffer(buffer) do
+    GenServer.call(__MODULE__, {:write_buffer, buffer})
+  end
+
+  def scroll_string(string) do
+    font = ScrollPhatHdEx.Fonts.Font5by7Smoothed
+
+    character_padding =
+      List.duplicate([0], font.height)
+
+    sentence =
+      string
+      |> String.codepoints
+      |> Enum.map(fn(string) ->
+        List.first(to_charlist(string))
+      end)
+      |> Enum.map(fn(char) ->
+        Map.get(font.data, char)
+      end)
+      |> Enum.intersperse(character_padding)
+      |> Enum.reduce(fn(elem, result) ->
+        nested_list_concat(result, elem)
+      end)
+
+    sentence_padding =
+      List.duplicate(0, @width)
+      |> List.duplicate(font.height)
+
+    # pad the string both left and right to
+    # allow nice scrolling experience for the user
+    result =
+      sentence_padding
+      |> nested_list_concat(sentence)
+      |> nested_list_concat(sentence_padding)
+
+    result_width =
+      result
+      |> List.first()
+      |> length()
+
+    0..(result_width - @width)
+    |> Enum.each(fn(n) ->
+      visible =
+        result
+        |> Enum.map(fn(list) ->
+          {_, visible_row} = Enum.split(list, n)
+          visible_row
+        end)
+
+      write_buffer(visible)
+      show()
+      Process.sleep(100)
+    end)
+
+    clear()
+    show()
   end
 
   def fill_animation do
@@ -68,17 +138,6 @@ defmodule ScrollPhatHdEx.Server do
     show()
   end
 
-  def epilepsy do
-    1..100
-    |> Enum.each(fn(n) ->
-      case rem(n, 2) do
-        0 -> clear(); show()
-        _ -> fill(); show()
-      end
-      Process.sleep(1)
-    end)
-  end
-
   def clear do
     GenServer.call(__MODULE__, :clear)
   end
@@ -89,8 +148,7 @@ defmodule ScrollPhatHdEx.Server do
     {:ok, i2c} = I2c.start_link(bus, address)
     reset_i2c(i2c)
     initialize_display(i2c)
-    buffer = Matrix.new(@width, @height)
-    {:ok, %State{buffer: buffer, i2c: i2c}}
+    {:ok, %State{buffer: empty_buffer(), i2c: i2c}}
   end
 
   def handle_call(:state, _from, state) do
@@ -101,11 +159,16 @@ defmodule ScrollPhatHdEx.Server do
     next_frame = next_frame(state.current_frame)
 
     write_bank(state.i2c, next_frame)
-    output = convert_buffer_to_output(state.buffer, state.brightness)
+    flipped_buffer = flip_buffer(state.buffer, state.flip_x, state.flip_y)
+    output = convert_buffer_to_output(flipped_buffer, state.brightness)
     write_output(state.i2c, output)
 
     write_config_register(state.i2c, @frame_register, next_frame)
     {:reply, :ok, %{state | current_frame: next_frame}}
+  end
+
+  def handle_call({:set_brightness, brightness}, _from, state) do
+    {:reply, :ok, %{state | brightness: brightness}}
   end
 
   def handle_call(:fill, _from, state) do
@@ -114,7 +177,7 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   def handle_call({:fill_up, limit}, _from, state) do
-    new_buffer = Enum.reduce(0..limit-1, Matrix.new(@width, @height), fn(n, result) ->
+    new_buffer = Enum.reduce(0..limit-1, empty_buffer(), fn(n, result) ->
       x = Integer.mod(n, @width)
       y = trunc(n / @width)
       Matrix.set(result, x, y, 255)
@@ -123,11 +186,58 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   def handle_call(:clear, _from, state) do
-    new_buffer = Matrix.new(@width, @height)
+    {:reply, :ok, %{state | buffer: empty_buffer()}}
+  end
+
+  def handle_call({:write_char, char}, _from, state) do
+    letter =
+      ScrollPhatHdEx.Fonts.Font3By5.data
+      |> Map.get(char)
+
+    new_buffer = nested_list_to_buffer(letter)
+
+    {:reply, :ok, %{state | buffer: new_buffer}}
+  end
+
+  def handle_call({:write_string, string}, _from, state) do
+    sentence =
+      string
+      |> String.codepoints
+      |> Enum.map(fn(string) ->
+        List.first(to_charlist(string))
+      end)
+      |> Enum.reduce([], fn(char, result) ->
+        letter =
+          ScrollPhatHdEx.Fonts.Font3By5.data
+          |> Map.get(char)
+
+        result
+        |> nested_list_concat(letter)
+        |> nested_list_concat(List.duplicate([0], length(letter)))
+      end)
+
+    new_buffer = nested_list_to_buffer(sentence)
+
+    {:reply, :ok, %{state | buffer: new_buffer}}
+  end
+
+  def handle_call({:write_buffer, nested_list}, _from, state) do
+    new_buffer =
+      nested_list
+      |> Enum.map(fn(list) ->
+        {result, _} = Enum.split(list, @width)
+        result
+      end)
+      |> nested_list_to_buffer()
+
     {:reply, :ok, %{state | buffer: new_buffer}}
   end
 
   # Helpers
+
+  defp empty_buffer() do
+    Matrix.new(@width, @height)
+  end
 
   defp reset_i2c(i2c) do
     write_bank(i2c, @config_bank)
@@ -165,7 +275,6 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   defp i2c_write(i2c, address, value) do
-    IO.inspect IO.iodata_to_binary([address, value])
     I2c.write(i2c, IO.iodata_to_binary([address, value]))
   end
 
@@ -178,7 +287,8 @@ defmodule ScrollPhatHdEx.Server do
     # put one on top of another. we need to do some acrobatics to get things working
     (for x <- 0..(@width-1), y <- 0..(@height-1), do: {x, y})
     |> Enum.reduce(List.duplicate(0, 144), fn({x, y}, result) ->
-      List.replace_at(result, pixel_address(x, 6-y), Matrix.elem(buffer, x, y))
+      value = round(Matrix.elem(buffer, x, y) * brightness)
+      List.replace_at(result, pixel_address(x, 6-y), value)
     end)
   end
 
@@ -199,6 +309,36 @@ defmodule ScrollPhatHdEx.Server do
     |> Enum.with_index
     |> Enum.each(fn({chunks, index}) ->
       i2c_write(i2c, @color_offset + (index * chunk_size), chunks)
+    end)
+  end
+
+  defp nested_list_to_buffer(nested_list) do
+    Enum.reduce(Enum.with_index(nested_list), empty_buffer(), fn({row, row_index}, result) ->
+      Enum.reduce(Enum.with_index(row), result, fn({value, col_index}, inner_result) ->
+        Matrix.set(inner_result, col_index, row_index, value)
+      end)
+    end)
+  end
+
+  defp nested_list_concat(first, []), do: first
+  defp nested_list_concat([], second), do: second
+  defp nested_list_concat(first, second) do
+    Enum.zip(first, second)
+    |> Enum.map(fn({r1,r2}) -> r1++r2 end)
+  end
+
+  def flip_buffer(buffer, false, false), do: buffer
+  def flip_buffer(buffer, flip_x, flip_y) do
+    conditional_flip = fn
+      (list, true) ->
+        Enum.reverse list
+      (list, false) ->
+        list
+    end
+
+    conditional_flip.(buffer, flip_y)
+    |> Enum.map(fn(row) ->
+      conditional_flip.(row, flip_x)
     end)
   end
 end
