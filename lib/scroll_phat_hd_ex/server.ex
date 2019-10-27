@@ -65,40 +65,46 @@ defmodule ScrollPhatHdEx.Server do
     GenServer.call(__MODULE__, {:fill_up, limit})
   end
 
-  def write_char(char) do
-    GenServer.call(__MODULE__, {:write_char, char})
-  end
-
-  def write_string(string) do
-    GenServer.call(__MODULE__, {:write_string, string})
-  end
-
   def write_buffer(buffer) do
     GenServer.call(__MODULE__, {:write_buffer, buffer})
   end
 
-  def scroll_string(string) do
-    font = ScrollPhatHdEx.Fonts.Font3By5
+  def write_char(char, font_size \\ :small) do
+    write_buffer(get_char(char, font_size))
+  end
 
-    character_padding = List.duplicate([0], font.height)
+  def write_string(string, font_size \\ :small) do
+    string
+    |> String.codepoints()
+    |> Enum.map(fn string ->
+      List.first(to_charlist(string))
+    end)
+    |> Enum.reduce([], fn char, result ->
+      letter = get_char(char, font_size)
 
+      result
+      |> nested_list_concat(letter)
+      |> nested_list_concat(character_padding())
+    end)
+    |> write_buffer
+  end
+
+  def scroll_string(string, font_size \\ :small) do
     sentence =
       string
       |> String.codepoints()
       |> Enum.map(fn string ->
         List.first(to_charlist(string))
       end)
-      |> Enum.map(fn char ->
-        Map.get(font.data, char)
-      end)
-      |> Enum.intersperse(character_padding)
+      |> Enum.map(&get_char(&1, font_size))
+      |> Enum.intersperse(character_padding())
       |> Enum.reduce(fn elem, result ->
         nested_list_concat(result, elem)
       end)
 
     sentence_padding =
       List.duplicate(0, @width)
-      |> List.duplicate(font.height)
+      |> List.duplicate(@height)
 
     # pad the string both left and right to
     # allow nice scrolling experience for the user
@@ -192,38 +198,6 @@ defmodule ScrollPhatHdEx.Server do
 
   def handle_call(:clear, _from, state) do
     {:reply, :ok, %{state | buffer: empty_buffer()}}
-  end
-
-  def handle_call({:write_char, char}, _from, state) do
-    letter =
-      ScrollPhatHdEx.Fonts.Font3By5.data()
-      |> Map.get(char)
-
-    new_buffer = nested_list_to_buffer(letter)
-
-    {:reply, :ok, %{state | buffer: new_buffer}}
-  end
-
-  def handle_call({:write_string, string}, _from, state) do
-    sentence =
-      string
-      |> String.codepoints()
-      |> Enum.map(fn string ->
-        List.first(to_charlist(string))
-      end)
-      |> Enum.reduce([], fn char, result ->
-        letter =
-          ScrollPhatHdEx.Fonts.Font3By5.data()
-          |> Map.get(char)
-
-        result
-        |> nested_list_concat(letter)
-        |> nested_list_concat(List.duplicate([0], length(letter)))
-      end)
-
-    new_buffer = nested_list_to_buffer(sentence)
-
-    {:reply, :ok, %{state | buffer: new_buffer}}
   end
 
   def handle_call({:write_buffer, nested_list}, _from, state) do
@@ -349,5 +323,34 @@ defmodule ScrollPhatHdEx.Server do
     |> Enum.map(fn row ->
       conditional_flip.(row, flip_x)
     end)
+  end
+
+  defp get_char(char, font_size) do
+    font =
+      case font_size do
+        :small -> ScrollPhatHdEx.Fonts.Font3By5
+        :big -> ScrollPhatHdEx.Fonts.Font5by7Smoothed
+      end
+
+    char_font = Map.get(font.data, char)
+
+    case font_size do
+      :small ->
+        case char_font do
+          [first | _] ->
+            padding = List.duplicate(0, length(first))
+            [padding | char_font] ++ [padding]
+
+          _ ->
+            char_font
+        end
+
+      :big ->
+        char_font
+    end
+  end
+
+  defp character_padding do
+    List.duplicate([0], @height)
   end
 end
