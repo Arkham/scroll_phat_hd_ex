@@ -15,12 +15,12 @@ defmodule ScrollPhatHdEx.Server do
   @audiosync_register 0x06
   # @breath1_register 0x08
   # @breath2_register 0x09
-  @shutdown_register 0x0a
+  @shutdown_register 0x0A
   # @gain_register 0x0b
   # @adc_register 0x0c
 
-  @config_bank 0x0b
-  @bank_address 0xfd
+  @config_bank 0x0B
+  @bank_address 0xFD
 
   @picture_mode 0x00
   # @autoplay_mode 0x08
@@ -31,13 +31,17 @@ defmodule ScrollPhatHdEx.Server do
   @color_offset 0x24
 
   defmodule State do
-    defstruct buffer: nil, i2c: nil, current_frame: 0,
-      flip_x: true, flip_y: true, brightness: 0.05
+    defstruct buffer: nil,
+              i2c: nil,
+              current_frame: 0,
+              flip_x: true,
+              flip_y: true,
+              brightness: 0.05
   end
 
   # Public API
 
-  def start_link do
+  def start_link(_) do
     GenServer.start_link(__MODULE__, [@bus, @address], name: __MODULE__)
   end
 
@@ -74,22 +78,21 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   def scroll_string(string) do
-    font = ScrollPhatHdEx.Fonts.Font5by7Smoothed
+    font = ScrollPhatHdEx.Fonts.Font3By5
 
-    character_padding =
-      List.duplicate([0], font.height)
+    character_padding = List.duplicate([0], font.height)
 
     sentence =
       string
-      |> String.codepoints
-      |> Enum.map(fn(string) ->
+      |> String.codepoints()
+      |> Enum.map(fn string ->
         List.first(to_charlist(string))
       end)
-      |> Enum.map(fn(char) ->
+      |> Enum.map(fn char ->
         Map.get(font.data, char)
       end)
       |> Enum.intersperse(character_padding)
-      |> Enum.reduce(fn(elem, result) ->
+      |> Enum.reduce(fn elem, result ->
         nested_list_concat(result, elem)
       end)
 
@@ -110,10 +113,10 @@ defmodule ScrollPhatHdEx.Server do
       |> length()
 
     0..(result_width - @width)
-    |> Enum.each(fn(n) ->
+    |> Enum.each(fn n ->
       visible =
         result
-        |> Enum.map(fn(list) ->
+        |> Enum.map(fn list ->
           {_, visible_row} = Enum.split(list, n)
           visible_row
         end)
@@ -129,7 +132,7 @@ defmodule ScrollPhatHdEx.Server do
 
   def fill_animation do
     0..119
-    |> Enum.each(fn(n) ->
+    |> Enum.each(fn n ->
       fill_up(n)
       show()
     end)
@@ -177,11 +180,13 @@ defmodule ScrollPhatHdEx.Server do
   end
 
   def handle_call({:fill_up, limit}, _from, state) do
-    new_buffer = Enum.reduce(0..limit-1, empty_buffer(), fn(n, result) ->
-      x = Integer.mod(n, @width)
-      y = trunc(n / @width)
-      Matrix.set(result, x, y, 255)
-    end)
+    new_buffer =
+      Enum.reduce(0..(limit - 1), empty_buffer(), fn n, result ->
+        x = Integer.mod(n, @width)
+        y = trunc(n / @width)
+        Matrix.set(result, x, y, 255)
+      end)
+
     {:reply, :ok, %{state | buffer: new_buffer}}
   end
 
@@ -191,7 +196,7 @@ defmodule ScrollPhatHdEx.Server do
 
   def handle_call({:write_char, char}, _from, state) do
     letter =
-      ScrollPhatHdEx.Fonts.Font3By5.data
+      ScrollPhatHdEx.Fonts.Font3By5.data()
       |> Map.get(char)
 
     new_buffer = nested_list_to_buffer(letter)
@@ -202,13 +207,13 @@ defmodule ScrollPhatHdEx.Server do
   def handle_call({:write_string, string}, _from, state) do
     sentence =
       string
-      |> String.codepoints
-      |> Enum.map(fn(string) ->
+      |> String.codepoints()
+      |> Enum.map(fn string ->
         List.first(to_charlist(string))
       end)
-      |> Enum.reduce([], fn(char, result) ->
+      |> Enum.reduce([], fn char, result ->
         letter =
-          ScrollPhatHdEx.Fonts.Font3By5.data
+          ScrollPhatHdEx.Fonts.Font3By5.data()
           |> Map.get(char)
 
         result
@@ -224,7 +229,7 @@ defmodule ScrollPhatHdEx.Server do
   def handle_call({:write_buffer, nested_list}, _from, state) do
     new_buffer =
       nested_list
-      |> Enum.map(fn(list) ->
+      |> Enum.map(fn list ->
         {result, _} = Enum.split(list, @width)
         result
       end)
@@ -285,10 +290,10 @@ defmodule ScrollPhatHdEx.Server do
     # our display is 17x7 but the actual controller is designed for a 16x9 display
     # what they did is to take the original display wirings and split them apart and
     # put one on top of another. we need to do some acrobatics to get things working
-    (for x <- 0..(@width-1), y <- 0..(@height-1), do: {x, y})
-    |> Enum.reduce(List.duplicate(0, 144), fn({x, y}, result) ->
+    for(x <- 0..(@width - 1), y <- 0..(@height - 1), do: {x, y})
+    |> Enum.reduce(List.duplicate(0, 144), fn {x, y}, result ->
       value = round(Matrix.elem(buffer, x, y) * brightness)
-      List.replace_at(result, pixel_address(x, 6-y), value)
+      List.replace_at(result, pixel_address(x, 6 - y), value)
     end)
   end
 
@@ -297,6 +302,7 @@ defmodule ScrollPhatHdEx.Server do
     y_t = 6 - (y + 8)
     x_t * 16 + y_t
   end
+
   defp pixel_address(x, y) do
     x_t = 8 - x
     x_t * 16 + y
@@ -306,15 +312,15 @@ defmodule ScrollPhatHdEx.Server do
     chunk_size = 32
 
     Enum.chunk(output, chunk_size, chunk_size, [])
-    |> Enum.with_index
-    |> Enum.each(fn({chunks, index}) ->
-      i2c_write(i2c, @color_offset + (index * chunk_size), chunks)
+    |> Enum.with_index()
+    |> Enum.each(fn {chunks, index} ->
+      i2c_write(i2c, @color_offset + index * chunk_size, chunks)
     end)
   end
 
   defp nested_list_to_buffer(nested_list) do
-    Enum.reduce(Enum.with_index(nested_list), empty_buffer(), fn({row, row_index}, result) ->
-      Enum.reduce(Enum.with_index(row), result, fn({value, col_index}, inner_result) ->
+    Enum.reduce(Enum.with_index(nested_list), empty_buffer(), fn {row, row_index}, result ->
+      Enum.reduce(Enum.with_index(row), result, fn {value, col_index}, inner_result ->
         Matrix.set(inner_result, col_index, row_index, value)
       end)
     end)
@@ -322,22 +328,25 @@ defmodule ScrollPhatHdEx.Server do
 
   defp nested_list_concat(first, []), do: first
   defp nested_list_concat([], second), do: second
+
   defp nested_list_concat(first, second) do
     Enum.zip(first, second)
-    |> Enum.map(fn({r1,r2}) -> r1++r2 end)
+    |> Enum.map(fn {r1, r2} -> r1 ++ r2 end)
   end
 
   def flip_buffer(buffer, false, false), do: buffer
+
   def flip_buffer(buffer, flip_x, flip_y) do
     conditional_flip = fn
-      (list, true) ->
-        Enum.reverse list
-      (list, false) ->
+      list, true ->
+        Enum.reverse(list)
+
+      list, false ->
         list
     end
 
     conditional_flip.(buffer, flip_y)
-    |> Enum.map(fn(row) ->
+    |> Enum.map(fn row ->
       conditional_flip.(row, flip_x)
     end)
   end
